@@ -8,9 +8,12 @@ from .parser import FormulaError
 from .schemas import (
     BalanceRequest,
     BalanceResponse,
+    StoichiometryRequest,
+    StoichiometryResponse,
     VerifyRequest,
     VerifyResponse,
 )
+from .stoichiometry import Feed, StoichiometryError, compute_stoichiometry
 
 app = FastAPI(
     title="化学方程式配平 API",
@@ -78,3 +81,33 @@ def verify(req: VerifyRequest) -> dict:
         )
     except FormulaError as exc:
         raise HTTPException(status_code=400, detail=f"化学式解析失败: {exc}") from exc
+
+
+@app.post(
+    "/api/v1/stoichiometry",
+    response_model=StoichiometryResponse,
+    tags=["stoichiometry"],
+    summary="化学计量计算：限制反应物、理论产量与剩余量",
+    responses={
+        400: {
+            "description": "投料缺失/重复/非正数量/非反应物、不支持的元素原子量，"
+            "或化学式无法解析"
+        },
+        422: {"description": "方程无法配平，或请求体校验失败"},
+    },
+)
+def stoichiometry(req: StoichiometryRequest) -> dict:
+    feeds = [Feed(formula=f.formula, amount=f.amount, unit=f.unit) for f in req.feeds]
+    try:
+        return compute_stoichiometry(
+            req.reactants, req.products, feeds, req.precision
+        )
+    except StoichiometryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FormulaError as exc:
+        raise HTTPException(status_code=400, detail=f"化学式解析失败: {exc}") from exc
+    except BalanceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": exc.message, "null_space_dim": exc.nullity},
+        ) from exc

@@ -2,6 +2,8 @@
 
 基于 FastAPI 的化学方程式配平服务。服务端为反应物/生成物构建**元素守恒矩阵（含电荷行）**，用**有理数高斯消元**求零空间；仅当零空间为一维且基向量可化为全正时，返回最大公约数约简后的**最小正整数系数**及逐元素、电荷核算，否则返回 `422` 并说明原因（零空间维数或无法全正）。
 
+另提供**化学计量计算**接口：在配平结果之上，按内置原子量表（H、C、N、O、Na、Mg、Al、S、Cl、K、Ca、Fe、Cu、Mn）换算投料物质的量，以反应进度最小值判定（可并列的）限制反应物，返回理论反应进度、各生成物理论产量与各反应物剩余量。全程 `Decimal` 计算，输出按请求 `precision` 四舍五入。
+
 ## 快速启动（单条命令）
 
 ```bash
@@ -102,6 +104,83 @@ curl -s http://localhost:8000/api/v1/verify \
 
 响应包含逐元素与电荷核算、`balanced` 结论，以及系数的 `gcd` 与是否已约简（`is_reduced`）。
 
+### `POST /api/v1/stoichiometry` — 化学计量计算
+
+在配平结果之上做投料计算：每种反应物必须且只能投料一次，单位仅支持 `mol` 或 `g`（按内置原子量表换算）；以反应进度 `ξ = n/ν` 的最小值判定限制反应物（可并列多个）。全部中间计算使用 `Decimal`，输出数值为字符串，统一按 `precision`（2～8，默认 4）四舍五入（ROUND_HALF_UP）。
+
+```bash
+curl -s http://localhost:8000/api/v1/stoichiometry \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "reactants": ["H2", "O2"],
+        "products": ["H2O"],
+        "feeds": [
+          {"formula": "H2", "amount": "2.5", "unit": "mol"},
+          {"formula": "O2", "amount": "32", "unit": "g"}
+        ],
+        "precision": 4
+      }'
+```
+
+响应（`200`）：
+
+```json
+{
+  "equation": "2H2 + O2 -> 2H2O",
+  "coefficients": [2, 1, 2],
+  "reactant_coefficients": [2, 1],
+  "product_coefficients": [2],
+  "precision": 4,
+  "extent_mol": "1.0001",
+  "limiting_reactants": ["O2"],
+  "reactants": [
+    {
+      "formula": "H2",
+      "coefficient": 2,
+      "molar_mass_g_per_mol": "2.0160",
+      "fed_amount": "2.5",
+      "fed_unit": "mol",
+      "fed_mol": "2.5000",
+      "fed_g": "5.0400",
+      "remaining_mol": "0.4999",
+      "remaining_g": "1.0077",
+      "is_limiting": false
+    },
+    {
+      "formula": "O2",
+      "coefficient": 1,
+      "molar_mass_g_per_mol": "31.9980",
+      "fed_amount": "32",
+      "fed_unit": "g",
+      "fed_mol": "1.0001",
+      "fed_g": "32.0000",
+      "remaining_mol": "0.0000",
+      "remaining_g": "0.0000",
+      "is_limiting": true
+    }
+  ],
+  "products": [
+    {
+      "formula": "H2O",
+      "coefficient": 2,
+      "molar_mass_g_per_mol": "18.0150",
+      "theoretical_mol": "2.0001",
+      "theoretical_g": "36.0323"
+    }
+  ]
+}
+```
+
+错误码（均为明确 4xx）：
+
+| 场景 | 状态码 |
+| --- | --- |
+| 化学式无法解析 | `400` |
+| 缺失投料 / 同一物质重复投料 / 投料物质不是反应物 / 非正数量 | `400` |
+| 元素不在内置原子量表（H C N O Na Mg Al S Cl K Ca Fe Cu Mn） | `400` |
+| 方程无法配平（零空间维数不为 1 或无法全正） | `422` |
+| 请求体校验失败（单位非 `mol`/`g`、`precision` 越界、数量非有限小数等） | `422` |
+
 ## 本地开发
 
 ```bash
@@ -114,10 +193,12 @@ pytest                 # 运行测试
 
 ```
 app/
-  parser.py     # 分子式解析：嵌套括号、结晶水、离子电荷
-  balancer.py   # 守恒矩阵（含电荷行）、有理数 RREF、零空间、整数化
-  schemas.py    # 请求/响应模型
-  main.py       # FastAPI 路由
+  parser.py         # 分子式解析：嵌套括号、结晶水、离子电荷
+  balancer.py       # 守恒矩阵（含电荷行）、有理数 RREF、零空间、整数化
+  stoichiometry.py  # 原子量表、mol/g 换算、限制反应物与产量/剩余量（Decimal）
+  schemas.py        # 请求/响应模型
+  main.py           # FastAPI 路由
 tests/test_api.py
+tests/test_stoichiometry.py
 Dockerfile / docker-compose.yml
 ```
