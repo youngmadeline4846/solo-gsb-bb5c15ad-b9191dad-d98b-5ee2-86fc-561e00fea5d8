@@ -1,4 +1,4 @@
-"""FastAPI 入口：化学方程式精确配平 API。"""
+"""FastAPI 入口：化学方程式精确配平 + 化学计量 API。"""
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
@@ -8,17 +8,21 @@ from .parser import FormulaError
 from .schemas import (
     BalanceRequest,
     BalanceResponse,
+    StoichiometryRequest,
+    StoichiometryResponse,
     VerifyRequest,
     VerifyResponse,
 )
+from .stoichiometry import StoichiometryError, compute_stoichiometry
 
 app = FastAPI(
     title="化学方程式配平 API",
     description=(
         "基于元素守恒矩阵（含电荷行）与有理数高斯消元零空间的精确配平服务。"
-        "支持嵌套括号、点号结晶水与末尾离子电荷。"
+        "支持嵌套括号、点号结晶水与末尾离子电荷；并提供基于内置原子量表的"
+        "化学计量计算（限制反应物、理论产量与剩余量）。"
     ),
-    version="1.0.0",
+    version="1.1.0",
 )
 
 
@@ -78,3 +82,34 @@ def verify(req: VerifyRequest) -> dict:
         )
     except FormulaError as exc:
         raise HTTPException(status_code=400, detail=f"化学式解析失败: {exc}") from exc
+
+
+@app.post(
+    "/api/v1/stoichiometry",
+    response_model=StoichiometryResponse,
+    tags=["stoichiometry"],
+    summary="化学计量：限制反应物、理论产量与剩余量",
+    responses={
+        400: {
+            "description": (
+                "化学式无法解析、投料缺失/重复/非正、"
+                "投料物质不是反应物、或元素无内置原子量"
+            )
+        },
+        422: {"description": "方程无法配平（零空间维数不为 1，或无法化为全正系数）"},
+    },
+)
+def stoichiometry(req: StoichiometryRequest) -> dict:
+    try:
+        return compute_stoichiometry(
+            req.reactants, req.products, req.feed, req.precision
+        )
+    except FormulaError as exc:
+        raise HTTPException(status_code=400, detail=f"化学式解析失败: {exc}") from exc
+    except BalanceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": exc.message, "null_space_dim": exc.nullity},
+        ) from exc
+    except StoichiometryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

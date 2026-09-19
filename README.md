@@ -2,6 +2,8 @@
 
 基于 FastAPI 的化学方程式配平服务。服务端为反应物/生成物构建**元素守恒矩阵（含电荷行）**，用**有理数高斯消元**求零空间；仅当零空间为一维且基向量可化为全正时，返回最大公约数约简后的**最小正整数系数**及逐元素、电荷核算，否则返回 `422` 并说明原因（零空间维数或无法全正）。
 
+另提供**化学计量接口**：在配平结果基础上，按内置原子量表（H、C、N、O、Na、Mg、Al、S、Cl、K、Ca、Fe、Cu、Mn）换算投料物质的量，以反应进度最小值判定（可并列的）限制反应物，返回理论反应进度、各生成物理论产量与各反应物剩余量。全程 `Decimal` 计算，输出按请求 `precision` 四舍五入。
+
 ## 快速启动（单条命令）
 
 ```bash
@@ -102,6 +104,58 @@ curl -s http://localhost:8000/api/v1/verify \
 
 响应包含逐元素与电荷核算、`balanced` 结论，以及系数的 `gcd` 与是否已约简（`is_reduced`）。
 
+### `POST /api/v1/stoichiometry` — 化学计量
+
+在配平结果基础上，根据各反应物投料（单位仅支持 `mol` 或 `g`）计算限制反应物、理论反应进度、各生成物理论产量与各反应物剩余量。
+
+- 内置原子量表（g/mol）：H 1.008、C 12.011、N 14.007、O 15.999、Na 22.98977、Mg 24.305、Al 26.982、S 32.06、Cl 35.45、K 39.0983、Ca 40.078、Fe 55.845、Cu 63.546、Mn 54.938（离子电荷的电子质量忽略不计）。
+- 每种反应物必须恰好投料一次；以反应进度 ξ = n/ν 的最小值判定限制反应物（可并列多个）。
+- 全程 `Decimal` 计算，所有小数字段按 `precision`（2～8，默认 4）四舍五入为**定长小数字符串**返回。
+
+```bash
+curl -s http://localhost:8000/api/v1/stoichiometry \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "reactants": ["H2", "O2"],
+        "products": ["H2O"],
+        "feed": [
+          {"formula": "H2", "amount": 10,  "unit": "mol"},
+          {"formula": "O2", "amount": 100, "unit": "g"}
+        ],
+        "precision": 4
+      }'
+```
+
+响应（`200`）：
+
+```json
+{
+  "equation": "2H2 + O2 -> 2H2O",
+  "coefficients": [2, 1, 2],
+  "reactant_coefficients": [2, 1],
+  "product_coefficients": [2],
+  "precision": 4,
+  "extent": "3.1252",
+  "limiting_reactants": ["O2"],
+  "products": [
+    {"formula": "H2O", "coefficient": 2, "theoretical_moles": "6.2504", "theoretical_grams": "112.6008"}
+  ],
+  "reactants": [
+    {"formula": "H2", "coefficient": 2, "feed_moles": "10.0000", "feed_grams": "20.1600",
+     "consumed_moles": "6.2504", "remaining_moles": "3.7496", "remaining_grams": "7.5592", "limiting": false},
+    {"formula": "O2", "coefficient": 1, "feed_moles": "3.1252", "feed_grams": "100.0000",
+     "consumed_moles": "3.1252", "remaining_moles": "0.0000", "remaining_grams": "0.0000", "limiting": true}
+  ]
+}
+```
+
+错误返回：
+
+| 状态码 | 场景 |
+| --- | --- |
+| `400` | 化学式无法解析；缺失投料；同一物质重复投料；投料量非正数；投料物质不是反应物；元素无内置原子量 |
+| `422` | 方程无法配平（零空间维数不为 1 或无法全正）；单位不是 `mol`/`g`；`precision` 超出 2～8 |
+
 ## 本地开发
 
 ```bash
@@ -114,10 +168,11 @@ pytest                 # 运行测试
 
 ```
 app/
-  parser.py     # 分子式解析：嵌套括号、结晶水、离子电荷
-  balancer.py   # 守恒矩阵（含电荷行）、有理数 RREF、零空间、整数化
-  schemas.py    # 请求/响应模型
-  main.py       # FastAPI 路由
-tests/test_api.py
+  parser.py         # 分子式解析：嵌套括号、结晶水、离子电荷
+  balancer.py       # 守恒矩阵（含电荷行）、有理数 RREF、零空间、整数化
+  stoichiometry.py  # 内置原子量表、投料换算、限制反应物、产量与剩余量（Decimal）
+  schemas.py        # 请求/响应模型
+  main.py           # FastAPI 路由
+tests/test_api.py / tests/test_stoichiometry.py
 Dockerfile / docker-compose.yml
 ```
